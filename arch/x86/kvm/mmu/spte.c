@@ -129,11 +129,12 @@ static bool kvm_is_mmio_pfn(kvm_pfn_t pfn)
 }
 
 /*
- * Returns true if the SPTE has bits that may be set without holding mmu_lock.
- * The caller is responsible for checking if the SPTE is shadow-present, and
- * for determining whether or not the caller cares about non-leaf SPTEs.
+ * Returns true if the SPTE has bits other than the Accessed bit that may be
+ * changed without holding mmu_lock. The caller is responsible for checking if
+ * the SPTE is shadow-present, and for determining whether or not the caller
+ * cares about non-leaf SPTEs.
  */
-bool spte_has_volatile_bits(u64 spte)
+bool spte_needs_atomic_write(u64 spte)
 {
 	if (!is_writable_pte(spte) && is_mmu_writable_spte(spte))
 		return true;
@@ -142,8 +143,14 @@ bool spte_has_volatile_bits(u64 spte)
 		return true;
 
 	if (spte_ad_enabled(spte)) {
-		if (!(spte & shadow_accessed_mask) ||
-		    (is_writable_pte(spte) && !(spte & shadow_dirty_mask)))
+		/*
+		 * Do not check the Accessed bit. It can be set (by the CPU)
+		 * and cleared (by kvm_tdp_mmu_age_spte()) without holding
+		 * the mmu_lock, but when clearing the Accessed bit, we do
+		 * not invalidate the TLB, so we can already miss Accessed bit
+		 * updates.
+		 */
+		if (is_writable_pte(spte) && !(spte & shadow_dirty_mask))
 			return true;
 	}
 
