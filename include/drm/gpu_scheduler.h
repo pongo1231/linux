@@ -71,6 +71,8 @@ enum drm_sched_priority {
 	DRM_SCHED_PRIORITY_COUNT
 };
 
+struct drm_sched_entity_stats;
+
 /**
  * struct drm_sched_entity - A wrapper around a job queue (typically
  * attached to the DRM file_priv).
@@ -108,6 +110,8 @@ struct drm_sched_entity {
 	 * not even a READ_ONCE.
 	 */
 	struct drm_sched_rq		*rq;
+
+	struct drm_sched_entity_stats	*stats;
 
 	/**
 	 * @sched_list:
@@ -238,9 +242,7 @@ struct drm_sched_entity {
 /**
  * struct drm_sched_rq - queue of entities to be scheduled.
  *
- * @sched: the scheduler to which this rq belongs to.
- * @lock: protects @entities, @rb_tree_root and @current_entity.
- * @current_entity: the entity which is to be scheduled.
+ * @lock: protects @entities, @rb_tree_root and @rr_deadline.
  * @entities: list of the entities to be scheduled.
  * @rb_tree_root: root of time based priority queue of entities for FIFO scheduling
  *
@@ -249,11 +251,9 @@ struct drm_sched_entity {
  * the next entity to emit commands from.
  */
 struct drm_sched_rq {
-	struct drm_gpu_scheduler	*sched;
-
 	spinlock_t			lock;
 	/* Following members are protected by the @lock: */
-	struct drm_sched_entity		*current_entity;
+	ktime_t				rr_deadline;
 	struct list_head		entities;
 	struct rb_root_cached		rb_tree_root;
 };
@@ -335,13 +335,6 @@ struct drm_sched_job {
 	u64				id;
 
 	/**
-	 * @submit_ts:
-	 *
-	 * When the job was pushed into the entity queue.
-	 */
-	ktime_t                         submit_ts;
-
-	/**
 	 * @sched:
 	 *
 	 * The scheduler this job is or will be scheduled on. Gets set by
@@ -352,6 +345,7 @@ struct drm_sched_job {
 
 	struct drm_sched_fence		*s_fence;
 	struct drm_sched_entity         *entity;
+	struct drm_sched_entity_stats	*entity_stats;
 
 	enum drm_sched_priority		s_priority;
 	u32				credits;
@@ -509,8 +503,7 @@ struct drm_gpu_scheduler {
 	atomic_t			credit_count;
 	long				timeout;
 	const char			*name;
-	u32                             num_rqs;
-	struct drm_sched_rq             **sched_rq;
+	struct drm_sched_rq             rq;
 	wait_queue_head_t		job_scheduled;
 	atomic64_t			job_id_count;
 	struct workqueue_struct		*submit_wq;
