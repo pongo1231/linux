@@ -81,6 +81,9 @@ SCHED_FEAT(TTWU_QUEUE, false)
  */
 SCHED_FEAT(TTWU_QUEUE, true)
 #endif
+SCHED_FEAT(TTWU_QUEUE_ON_CPU, true)
+SCHED_FEAT(TTWU_QUEUE_DELAYED, false)
+SCHED_FEAT(TTWU_QUEUE_DEFAULT, false)
 
 /*
  * When doing wakeups, attempt to limit superfluous scans of the LLC domain.
