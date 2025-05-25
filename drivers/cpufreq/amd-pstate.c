@@ -1452,6 +1452,7 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 	struct amd_cpudata *cpudata;
 	union perf_cached perf;
 	struct device *dev;
+	u64 value;
 	int ret;
 
 	/*
@@ -1514,6 +1515,13 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 	} else {
 		policy->policy = CPUFREQ_POLICY_POWERSAVE;
 		cpudata->epp_default = AMD_CPPC_EPP_BALANCE_PERFORMANCE;
+	}
+
+	if (cpu_feature_enabled(X86_FEATURE_CPPC)) {
+		ret = rdmsrq_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, &value);
+		if (ret)
+			return ret;
+		WRITE_ONCE(cpudata->cppc_req_cached, value);
 	}
 
 	ret = amd_pstate_set_epp(policy, cpudata->epp_default);
