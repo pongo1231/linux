@@ -127,7 +127,11 @@ Description:	RO. VRAM temperature in millidegree Celsius.
 
 What:		/sys/bus/pci/drivers/xe/.../hwmon/hwmon<i>/fan1_input
 Date:		March 2025
+<<<<<<< HEAD
 KernelVersion:	6.16
+=======
+KernelVersion:	6.14
+>>>>>>> 3d455e2c2e28 (cachy)
 Contact:	intel-xe@lists.freedesktop.org
 Description:	RO. Fan 1 speed in RPM.
 
@@ -135,7 +139,11 @@ Description:	RO. Fan 1 speed in RPM.
 
 What:		/sys/bus/pci/drivers/xe/.../hwmon/hwmon<i>/fan2_input
 Date:		March 2025
+<<<<<<< HEAD
 KernelVersion:	6.16
+=======
+KernelVersion:	6.14
+>>>>>>> 3d455e2c2e28 (cachy)
 Contact:	intel-xe@lists.freedesktop.org
 Description:	RO. Fan 2 speed in RPM.
 
@@ -143,7 +151,11 @@ Description:	RO. Fan 2 speed in RPM.
 
 What:		/sys/bus/pci/drivers/xe/.../hwmon/hwmon<i>/fan3_input
 Date:		March 2025
+<<<<<<< HEAD
 KernelVersion:	6.16
+=======
+KernelVersion:	6.14
+>>>>>>> 3d455e2c2e28 (cachy)
 Contact:	intel-xe@lists.freedesktop.org
 Description:	RO. Fan 3 speed in RPM.
 
