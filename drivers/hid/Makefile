@@ -174,6 +174,14 @@ obj-$(CONFIG_AMD_SFH_HID)       += amd-sfh-hid/
 
 obj-$(CONFIG_ASUS_ALLY_HID)  += asus-ally-hid/
 
+obj-$(CONFIG_ZOTAC_ZONE_HID)  += zotac-zone-hid/
+
 obj-$(CONFIG_SURFACE_HID_CORE)  += surface-hid/
 
 obj-$(CONFIG_INTEL_THC_HID)     += intel-thc-hid/
+
+obj-$(CONFIG_SPI_HID_APPLE_CORE)	+= spi-hid/
+
+obj-$(CONFIG_HID_DOCKCHANNEL)   += dockchannel-hid/
+
+obj-$(CONFIG_HID_MSI_CLAW)      += hid-msi-claw.o
