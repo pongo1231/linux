@@ -459,6 +459,47 @@ config IBM_RTL
 	 state = 0 (BIOS SMIs on)
 	 state = 1 (BIOS SMIs off)
 
+config LENOVO_WMI_EVENTS
+	tristate
+	depends on ACPI_WMI
+
+config LENOVO_WMI_HELPERS
+	tristate
+	depends on ACPI_WMI
+
+config LENOVO_WMI_GAMEZONE
+	tristate "Lenovo GameZone WMI Driver"
+	depends on ACPI_WMI
+	depends on DMI
+	select ACPI_PLATFORM_PROFILE
+	select LENOVO_WMI_EVENTS
+	select LENOVO_WMI_HELPERS
+	help
+	  Say Y here if you have a WMI aware Lenovo Legion device and would like to use the
+	  platform-profile firmware interface to manage power usage.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called lenovo-wmi-gamezone.
+
+config LENOVO_WMI_DATA01
+	tristate
+	depends on ACPI_WMI
+
+config LENOVO_WMI_TUNING
+	tristate "Lenovo Other Mode WMI Driver"
+	depends on ACPI_WMI
+	select FW_ATTR_CLASS
+	select LENOVO_WMI_DATA01
+	select LENOVO_WMI_EVENTS
+	select LENOVO_WMI_HELPERS
+	help
+	  Say Y here if you have a WMI aware Lenovo Legion device and would like to use the
+	  firmware_attributes API to control various tunable settings typically exposed by
+	  Lenovo software in Windows.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called lenovo-wmi-other.
+
 config IDEAPAD_LAPTOP
 	tristate "Lenovo IdeaPad Laptop Extras"
 	depends on ACPI
@@ -738,8 +779,11 @@ config MSI_WMI
 
 config MSI_WMI_PLATFORM
 	tristate "MSI WMI Platform features"
+	depends on ACPI_BATTERY
 	depends on ACPI_WMI
 	depends on HWMON
+	select ACPI_PLATFORM_PROFILE
+	select FW_ATTR_CLASS
 	help
 	  Say Y here if you want to have support for WMI-based platform features
 	  like fan sensor access on MSI machines.
@@ -1240,6 +1284,16 @@ config OXP_EC
 		devices and the OrangePi Neo.
 
 source "drivers/platform/x86/tuxedo/Kconfig"
+
+config ZOTAC_ZONE_PLATFORM
+	tristate "Zotac Zone platform driver"
+	select FW_ATTR_CLASS
+	select ACPI_PLATFORM_PROFILE
+	help
+	  Support for fans and PPT on Zotac Zone devices.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called zotac-zone.
 
 endif # X86_PLATFORM_DEVICES
 

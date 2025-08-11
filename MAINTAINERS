@@ -13676,11 +13676,34 @@ S:	Maintained
 W:	http://legousb.sourceforge.net/
 F:	drivers/usb/misc/legousbtower.c
 
+LENOVO WMI DRIVERS
+M:	Derek J. Clark <derekjohn.clark@gmail.com>
+L:	platform-driver-x86@vger.kernel.org
+S:	Maintained
+F:	Documentation/wmi/devices/lenovo-wmi-gamezone.rst
+F:	Documentation/wmi/devices/lenovo-wmi-other.rst
+F:	drivers/platform/x86/lenovo-wmi-capdata01.*
+F:	drivers/platform/x86/lenovo-wmi-events.*
+F:	drivers/platform/x86/lenovo-wmi-gamezone.*
+F:	drivers/platform/x86/lenovo-wmi-helpers.*
+F:	drivers/platform/x86/lenovo-wmi-other.*
+
 LENOVO WMI HOTKEY UTILITIES DRIVER
 M:	Jackie Dong <xy-jackie@139.com>
 L:	platform-driver-x86@vger.kernel.org
 S:	Maintained
 F:	drivers/platform/x86/lenovo-wmi-hotkey-utilities.c
+
+LENOVO LEGION GO S HID
+M:	Derek J. Clark <derekjohn.clark@gmail.com>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	drivers/hid/lenovo-legos-hid/Kconfig
+F:	drivers/hid/lenovo-legos-hid/Makefile
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-config.c
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-config.h
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-core.c
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-core.h
 
 LETSKETCH HID TABLET DRIVER
 M:	Hans de Goede <hansg@kernel.org>
