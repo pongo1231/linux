@@ -178,6 +178,7 @@ config HID_APPLETB_KBD
 config HID_ASUS
 	tristate "Asus"
 	depends on USB_HID
+	depends on LEDS_CLASS_MULTICOLOR
 	depends on LEDS_CLASS
 	depends on ASUS_WMI || ASUS_WMI=n
 	select POWER_SUPPLY
@@ -190,6 +191,15 @@ config HID_ASUS
 	- VivoBook E200HA
 	- GL553V series
 	- GL753V series
+
+config HID_ASUS_ALLY
+    tristate "Asus Ally gamepad configuration support"
+    depends on USB_HID
+    depends on LEDS_CLASS
+    depends on LEDS_CLASS_MULTICOLOR
+    select POWER_SUPPLY
+    help
+    Support for configuring the Asus ROG Ally gamepad using attributes.
 
 config HID_AUREAL
 	tristate "Aureal"
