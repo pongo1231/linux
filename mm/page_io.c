@@ -290,7 +290,7 @@ static bool kcompressd_store(struct folio *folio)
 
 	/* Swap device must be sync-efficient */
 	if (!zswap_is_enabled() &&
-		!data_race(swp_swap_info(folio->swap)->flags & SWP_SYNCHRONOUS_IO))
+		!data_race(swp_info(folio->swap)->flags & SWP_SYNCHRONOUS_IO))
 		return false;
 
 	/* If the kcompress_fifo is full, we must swap out the head
