@@ -944,6 +944,11 @@ static struct freq_attr *hwp_cpufreq_attrs[] = {
 	NULL,
 };
 
+static u8 hybrid_get_cpu_type(unsigned int cpu)
+{
+	return cpu_data(cpu).topo.intel_type;
+}
+
 static bool no_cas __ro_after_init;
 
 static struct cpudata *hybrid_max_perf_cpu __read_mostly;
@@ -954,23 +959,20 @@ static struct cpudata *hybrid_max_perf_cpu __read_mostly;
 static DEFINE_MUTEX(hybrid_capacity_lock);
 
 #ifdef CONFIG_ENERGY_MODEL
-#define HYBRID_EM_STATE_COUNT	4
+#define HYBRID_EM_STATE_COUNT	2
 
 static int hybrid_active_power(struct device *dev, unsigned long *power,
 			       unsigned long *freq)
 {
 	/*
-	 * Create "utilization bins" of 0-40%, 40%-60%, 60%-80%, and 80%-100%
-	 * of the maximum capacity such that two CPUs of the same type will be
-	 * regarded as equally attractive if the utilization of each of them
-	 * falls into the same bin, which should prevent tasks from being
-	 * migrated between them too often.
+	 * Create two "states" corresponding to 50% and 100% of the full
+	 * capacity.
 	 *
-	 * For this purpose, return the "frequency" of 2 for the first
+	 * For this purpose, return the "frequency" of 1 for the first
 	 * performance level and otherwise leave the value set by the caller.
 	 */
 	if (!*freq)
-		*freq = 2;
+		*freq = 1;
 
 	/* No power information. */
 	*power = EM_MAX_POWER;
@@ -978,39 +980,37 @@ static int hybrid_active_power(struct device *dev, unsigned long *power,
 	return 0;
 }
 
+static bool hybrid_has_l3(unsigned int cpu)
+{
+	struct cpu_cacheinfo *cacheinfo = get_cpu_cacheinfo(cpu);
+	unsigned int i;
+
+	if (!cacheinfo)
+		return false;
+
+	for (i = 0; i < cacheinfo->num_leaves; i++) {
+		if (cacheinfo->info_list[i].level == 3)
+			return true;
+	}
+
+	return false;
+}
+
 static int hybrid_get_cost(struct device *dev, unsigned long freq,
 			   unsigned long *cost)
 {
-	struct pstate_data *pstate = &all_cpu_data[dev->id]->pstate;
-	struct cpu_cacheinfo *cacheinfo = get_cpu_cacheinfo(dev->id);
-
 	/*
-	 * The smaller the perf-to-frequency scaling factor, the larger the IPC
-	 * ratio between the given CPU and the least capable CPU in the system.
-	 * Regard that IPC ratio as the primary cost component and assume that
-	 * the scaling factors for different CPU types will differ by at least
-	 * 5% and they will not be above INTEL_PSTATE_CORE_SCALING.
-	 *
-	 * Add the freq value to the cost, so that the cost of running on CPUs
-	 * of the same type in different "utilization bins" is different.
+	 * The cost per scale-invariant utilization point for LPE-cores (CPUs
+	 * without L3 cache), E-cores and P-cores is chosen so that the cost
+	 * priority of LPE-cores relative to E-cores is 1.5 and the cost
+	 * priority of E-cores relative to P-cores is 2.
 	 */
-	*cost = div_u64(100ULL * INTEL_PSTATE_CORE_SCALING, pstate->scaling) + freq;
-	/*
-	 * Increase the cost slightly for CPUs able to access L3 to avoid
-	 * touching it in case some other CPUs of the same type can do the work
-	 * without it.
-	 */
-	if (cacheinfo) {
-		unsigned int i;
-
-		/* Check if L3 cache is there. */
-		for (i = 0; i < cacheinfo->num_leaves; i++) {
-			if (cacheinfo->info_list[i].level == 3) {
-				*cost += 2;
-				break;
-			}
-		}
-	}
+	if (!hybrid_has_l3(dev->id))
+		*cost = 2;
+	else if (hybrid_get_cpu_type(dev->id) == INTEL_CPU_TYPE_ATOM)
+		*cost = 3;
+	else
+		*cost = 6;
 
 	return 0;
 }
@@ -2331,18 +2331,14 @@ static int knl_get_turbo_pstate(int cpu)
 static int hwp_get_cpu_scaling(int cpu)
 {
 	if (hybrid_scaling_factor) {
-		struct cpuinfo_x86 *c = &cpu_data(cpu);
-		u8 cpu_type = c->topo.intel_type;
-
 		/*
 		 * Return the hybrid scaling factor for P-cores and use the
 		 * default core scaling for E-cores.
 		 */
-		if (cpu_type == INTEL_CPU_TYPE_CORE)
+		if (hybrid_get_cpu_type(cpu) == INTEL_CPU_TYPE_CORE)
 			return hybrid_scaling_factor;
 
-		if (cpu_type == INTEL_CPU_TYPE_ATOM)
-			return core_get_scaling();
+		return core_get_scaling();
 	}
 
 	/* Use core scaling on non-hybrid systems. */
