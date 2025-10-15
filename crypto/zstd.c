@@ -16,7 +16,7 @@
 #include <crypto/scatterwalk.h>
 
 
-#define ZSTD_DEF_LEVEL		3
+#define ZSTD_DEF_LEVEL		1
 #define ZSTD_MAX_WINDOWLOG	18
 #define ZSTD_MAX_SIZE		BIT(ZSTD_MAX_WINDOWLOG)
 
