@@ -4188,7 +4188,8 @@ int ext4_calculate_overhead(struct super_block *sb)
 	unsigned int j_blocks, j_inum = le32_to_cpu(es->s_journal_inum);
 	ext4_group_t i, ngroups = ext4_get_groups_count(sb);
 	ext4_fsblk_t overhead = 0;
-	char *buf = (char *) get_zeroed_page(GFP_NOFS);
+	gfp_t gfp = GFP_NOFS | __GFP_ZERO;
+	char *buf = (char *)__get_free_pages(gfp, sbi->s_min_folio_order);
 
 	if (!buf)
 		return -ENOMEM;
@@ -4213,7 +4214,7 @@ int ext4_calculate_overhead(struct super_block *sb)
 		blks = count_overhead(sb, i, buf);
 		overhead += blks;
 		if (blks)
-			memset(buf, 0, PAGE_SIZE);
+			memset(buf, 0, sb->s_blocksize);
 		cond_resched();
 	}
 
@@ -4236,7 +4237,7 @@ int ext4_calculate_overhead(struct super_block *sb)
 	}
 	sbi->s_overhead = overhead;
 	smp_wmb();
-	free_page((unsigned long) buf);
+	free_pages((unsigned long)buf, sbi->s_min_folio_order);
 	return 0;
 }
 
@@ -4389,8 +4390,7 @@ static void ext4_set_def_opts(struct super_block *sb,
 	    ((def_mount_opts & EXT4_DEFM_NODELALLOC) == 0))
 		set_opt(sb, DELALLOC);
 
-	if (sb->s_blocksize <= PAGE_SIZE)
-		set_opt(sb, DIOREAD_NOLOCK);
+	set_opt(sb, DIOREAD_NOLOCK);
 }
 
 static int ext4_handle_clustersize(struct super_block *sb)
@@ -5040,6 +5040,31 @@ static const char *ext4_has_journal_option(struct super_block *sb)
 	return NULL;
 }
 
+static int ext4_check_large_folio(struct super_block *sb)
+{
+	const char *err_str = NULL;
+
+	if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA)
+		err_str = "data=journal";
+	else if (ext4_has_feature_verity(sb))
+		err_str = "verity";
+	else if (ext4_has_feature_encrypt(sb))
+		err_str = "encrypt";
+
+	if (!err_str) {
+		ext4_set_mount_flag(sb, EXT4_MF_LARGE_FOLIO);
+	} else if (sb->s_blocksize > PAGE_SIZE) {
+		ext4_msg(sb, KERN_ERR, "bs(%lu) > ps(%lu) unsupported for %s",
+			 sb->s_blocksize, PAGE_SIZE, err_str);
+		return -EINVAL;
+	}
+
+	if (sb->s_blocksize > PAGE_SIZE)
+		ext4_msg(sb, KERN_NOTICE, "EXPERIMENTAL bs(%lu) > ps(%lu) enabled.",
+			 sb->s_blocksize, PAGE_SIZE);
+	return 0;
+}
+
 static int ext4_load_super(struct super_block *sb, ext4_fsblk_t *lsb,
 			   int silent)
 {
@@ -5107,11 +5132,8 @@ static int ext4_load_super(struct super_block *sb, ext4_fsblk_t *lsb,
 	 * If the default block size is not the same as the real block size,
 	 * we need to reload it.
 	 */
-	if (sb->s_blocksize == blocksize) {
-		*lsb = logical_sb_block;
-		sbi->s_sbh = bh;
-		return 0;
-	}
+	if (sb->s_blocksize == blocksize)
+		goto success;
 
 	/*
 	 * bh must be released before kill_bdev(), otherwise
@@ -5142,6 +5164,9 @@ static int ext4_load_super(struct super_block *sb, ext4_fsblk_t *lsb,
 		ext4_msg(sb, KERN_ERR, "Magic mismatch, very weird!");
 		goto out;
 	}
+
+success:
+	sbi->s_min_folio_order = get_order(blocksize);
 	*lsb = logical_sb_block;
 	sbi->s_sbh = bh;
 	return 0;
@@ -5315,6 +5340,10 @@ static int __ext4_fill_super(struct fs_context *fc, struct super_block *sb)
 		goto failed_mount;
 
 	ext4_apply_options(fc, sb);
+
+	err = ext4_check_large_folio(sb);
+	if (err < 0)
+		goto failed_mount;
 
 	err = ext4_encoding_init(sb, es);
 	if (err)
@@ -7412,7 +7441,8 @@ static struct file_system_type ext4_fs_type = {
 	.init_fs_context	= ext4_init_fs_context,
 	.parameters		= ext4_param_specs,
 	.kill_sb		= ext4_kill_sb,
-	.fs_flags		= FS_REQUIRES_DEV | FS_ALLOW_IDMAP | FS_MGTIME,
+	.fs_flags		= FS_REQUIRES_DEV | FS_ALLOW_IDMAP | FS_MGTIME |
+				  FS_LBS,
 };
 MODULE_ALIAS_FS("ext4");
 
