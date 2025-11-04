@@ -1409,6 +1409,11 @@ struct task_struct {
 	struct rseq_data		rseq;
 	struct sched_mm_cid		mm_cid;
 
+#ifdef CONFIG_SCHED_CACHE
+	struct callback_head		cache_work;
+	int				preferred_llc;
+#endif
+
 	struct tlbflush_unmap_batch	tlb_ubc;
 
 	/* Cache last used pipe for splice(): */
