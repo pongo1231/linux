@@ -81,6 +81,11 @@ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
 
 __read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
 
+/*
+ * vCPU debooster sysctl control
+ */
+unsigned int sysctl_sched_vcpu_debooster_enabled __read_mostly = 1;
+
 static int __init setup_sched_thermal_decay_shift(char *str)
 {
 	pr_warn("Ignoring the deprecated sched_thermal_decay_shift= option\n");
@@ -9038,6 +9043,287 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev, struct t
 }
 
 /*
+ * High-frequency yield gating to reduce overhead on compute-intensive workloads.
+ * Returns true if the yield should be skipped due to frequency limits.
+ *
+ * Optimized: single threshold with READ_ONCE/WRITE_ONCE, refresh timestamp on every call.
+ */
+static bool yield_deboost_rate_limit(struct rq *rq, u64 now_ns)
+{
+	u64 last = READ_ONCE(rq->yield_deboost_last_time_ns);
+	bool limited = false;
+
+	if (last) {
+		u64 delta = now_ns - last;
+		limited = (delta <= 6000ULL * NSEC_PER_USEC);
+	}
+
+	WRITE_ONCE(rq->yield_deboost_last_time_ns, now_ns);
+	return limited;
+}
+
+/*
+ * Validate tasks and basic parameters for yield deboost operation.
+ * Performs comprehensive safety checks including feature enablement,
+ * NULL pointer validation, task state verification, and same-rq requirement.
+ * Returns false with appropriate debug logging if any validation fails,
+ * ensuring only safe and meaningful yield operations proceed.
+ */
+static bool yield_deboost_validate_tasks(struct rq *rq, struct task_struct *p_target,
+					  struct task_struct **p_yielding_out,
+					  struct sched_entity **se_y_out,
+					  struct sched_entity **se_t_out)
+{
+	struct task_struct *p_yielding;
+	struct sched_entity *se_y, *se_t;
+	u64 now_ns;
+
+	if (!sysctl_sched_vcpu_debooster_enabled)
+		return false;
+
+	if (!rq || !p_target)
+		return false;
+
+	now_ns = rq->clock;
+
+	if (yield_deboost_rate_limit(rq, now_ns))
+		return false;
+
+	p_yielding = rq->curr;
+	if (!p_yielding || p_yielding == p_target ||
+	    p_target->sched_class != &fair_sched_class ||
+	    p_yielding->sched_class != &fair_sched_class)
+		return false;
+
+	se_y = &p_yielding->se;
+	se_t = &p_target->se;
+
+	if (!se_t || !se_y || !se_t->on_rq || !se_y->on_rq)
+		return false;
+
+	if (task_rq(p_yielding) != rq || task_rq(p_target) != rq)
+		return false;
+
+	*p_yielding_out = p_yielding;
+	*se_y_out = se_y;
+	*se_t_out = se_t;
+	return true;
+}
+
+/*
+ * Find the lowest common ancestor (LCA) in the cgroup hierarchy for EEVDF.
+ * We walk up both entity hierarchies under rq->lock protection.
+ * Task migration requires task_rq_lock, ensuring parent chains remain stable.
+ * We locate the first common cfs_rq where both entities coexist, representing
+ * the appropriate level for vruntime adjustments and EEVDF field updates
+ * (deadline, vlag) to maintain scheduler consistency.
+ */
+static bool yield_deboost_find_lca(struct sched_entity *se_y, struct sched_entity *se_t,
+				    struct sched_entity **se_y_lca_out,
+				    struct sched_entity **se_t_lca_out,
+				    struct cfs_rq **cfs_rq_common_out)
+{
+	struct sched_entity *se_y_lca, *se_t_lca;
+	struct cfs_rq *cfs_rq_common;
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	se_t_lca = se_t;
+	se_y_lca = se_y;
+
+	while (se_t_lca && se_y_lca && se_t_lca->depth != se_y_lca->depth) {
+		if (se_t_lca->depth > se_y_lca->depth)
+			se_t_lca = se_t_lca->parent;
+		else
+			se_y_lca = se_y_lca->parent;
+	}
+
+	while (se_t_lca && se_y_lca) {
+		if (cfs_rq_of(se_t_lca) == cfs_rq_of(se_y_lca)) {
+			cfs_rq_common = cfs_rq_of(se_t_lca);
+			goto found_lca;
+		}
+		se_t_lca = se_t_lca->parent;
+		se_y_lca = se_y_lca->parent;
+	}
+	return false;
+#else
+	if (cfs_rq_of(se_y) != cfs_rq_of(se_t))
+		return false;
+	cfs_rq_common = cfs_rq_of(se_y);
+	se_y_lca = se_y;
+	se_t_lca = se_t;
+#endif
+
+found_lca:
+	if (!se_y_lca || !se_t_lca)
+		return false;
+
+	if (cfs_rq_common->nr_queued <= 1)
+		return false;
+
+	if (!se_y_lca->slice)
+		return false;
+
+	*se_y_lca_out = se_y_lca;
+	*se_t_lca_out = se_t_lca;
+	*cfs_rq_common_out = cfs_rq_common;
+	return true;
+}
+
+/*
+ * Apply debounce for reverse pair within ~600us to reduce ping-pong.
+ * Downscales penalty to max(need, gran) when the previous pair was target->source,
+ * and updates per-rq debounce tracking fields to avoid cross-CPU races.
+ */
+static u64 yield_deboost_apply_debounce(struct rq *rq, struct sched_entity *se_t,
+					u64 penalty, u64 need, u64 gran)
+{
+	u64 now_ns = rq->clock;
+	struct task_struct *p_yielding = rq->curr;
+	struct task_struct *p_target = task_of(se_t);
+
+	if (p_yielding && p_target) {
+		pid_t src_pid = p_yielding->pid;
+		pid_t dst_pid = p_target->pid;
+		pid_t last_src = rq->yield_deboost_last_src_pid;
+		pid_t last_dst = rq->yield_deboost_last_dst_pid;
+		u64  last_ns  = rq->yield_deboost_last_pair_time_ns;
+
+		if (last_src == dst_pid && last_dst == src_pid &&
+		    (now_ns - last_ns) <= (600ULL * NSEC_PER_USEC)) {
+			u64 alt = need;
+			if (alt < gran)
+				alt = gran;
+			if (penalty > alt)
+				penalty = alt;
+		}
+
+		/* Update per-rq tracking */
+		rq->yield_deboost_last_src_pid = src_pid;
+		rq->yield_deboost_last_dst_pid = dst_pid;
+		rq->yield_deboost_last_pair_time_ns = now_ns;
+	}
+
+	return penalty;
+}
+
+/*
+ * Calculate penalty with debounce logic for EEVDF yield deboost.
+ * Computes vruntime penalty based on fairness gap (need) plus granularity,
+ * applies queue-size-based caps to prevent excessive penalties in small queues,
+ * and implements reverse-pair debounce (~300us) to reduce ping-pong effects.
+ * Returns 0 if no penalty needed, otherwise returns clamped penalty value.
+ */
+static u64 yield_deboost_calculate_penalty(struct rq *rq, struct sched_entity *se_y_lca,
+				    struct sched_entity *se_t_lca, struct sched_entity *se_t,
+				    int nr_queued)
+{
+	u64 gran, need, penalty, maxp;
+	u64 gran_floor;
+	u64 weighted_need, base;
+
+	gran = calc_delta_fair(sysctl_sched_base_slice, se_y_lca);
+	/* Low-bound safeguard for gran when slice is abnormally small */
+	gran_floor = calc_delta_fair(sysctl_sched_base_slice >> 1, se_y_lca);
+	if (gran < gran_floor)
+		gran = gran_floor;
+
+	need = 0;
+	if (se_t_lca->vruntime > se_y_lca->vruntime)
+		need = se_t_lca->vruntime - se_y_lca->vruntime;
+
+	/* Apply 10% boost to need when positive (weighted_need = need * 1.10) */
+	penalty = gran;
+	if (need) {
+		/* weighted_need = need + 10% */
+		weighted_need = need + need / 10;
+		/* clamp to avoid overflow when adding to gran (still capped later) */
+		if (weighted_need > U64_MAX - penalty)
+			weighted_need = U64_MAX - penalty;
+		penalty += weighted_need;
+	}
+
+	/* Apply debounce via helper to avoid ping-pong */
+	penalty = yield_deboost_apply_debounce(rq, se_t, penalty, need, gran);
+
+	/* Upper bound (cap): slightly more aggressive for mid-size queues */
+	if (nr_queued == 2)
+		maxp = gran * 6;		/* Strongest push for 2-task ping-pong */
+	else if (nr_queued == 3)
+		maxp = gran * 4;		/* 4.0 * gran */
+	else if (nr_queued <= 6)
+		maxp = (gran * 5) / 2;		/* 2.5 * gran */
+	else if (nr_queued <= 8)
+		maxp = gran * 2;		/* 2.0 * gran */
+	else if (nr_queued <= 12)
+		maxp = (gran * 3) / 2;		/* 1.5 * gran */
+	else
+		maxp = gran;			/* 1.0 * gran */
+
+	if (penalty < gran)
+		penalty = gran;
+	if (penalty > maxp)
+		penalty = maxp;
+
+	/* If no need, apply refined baseline push (low risk + mid risk combined). */
+	if (need == 0) {
+		/*
+		 * Baseline multiplier for need==0:
+		 *   2        -> 1.00 * gran
+		 *   3        -> 0.9375 * gran
+		 *   4–6      -> 0.625 * gran
+		 *   7–8      -> 0.50  * gran
+		 *   9–12     -> 0.375 * gran
+		 *   >12      -> 0.25  * gran
+		 */
+		base = gran;
+		if (nr_queued == 3)
+			base = (gran * 15) / 16;	/* 0.9375 */
+		else if (nr_queued >= 4 && nr_queued <= 6)
+			base = (gran * 5) / 8;		/* 0.625 */
+		else if (nr_queued >= 7 && nr_queued <= 8)
+			base = gran / 2;		/* 0.5 */
+		else if (nr_queued >= 9 && nr_queued <= 12)
+			base = (gran * 3) / 8;		/* 0.375 */
+		else if (nr_queued > 12)
+			base = gran / 4;		/* 0.25 */
+
+		if (penalty < base)
+			penalty = base;
+	}
+
+	return penalty;
+}
+
+/*
+ * Apply penalty and update EEVDF fields for scheduler consistency.
+ * Safely applies vruntime penalty with overflow protection, then updates
+ * EEVDF-specific fields (deadline, vlag) and cfs_rq min_vruntime to maintain
+ * scheduler state consistency. Returns true on successful application,
+ * false if penalty cannot be safely applied.
+ */
+static void yield_deboost_apply_penalty(struct rq *rq, struct sched_entity *se_y_lca,
+				 struct cfs_rq *cfs_rq_common, u64 penalty)
+{
+	u64 new_vruntime;
+
+	/* Overflow protection */
+	if (se_y_lca->vruntime > (U64_MAX - penalty))
+		return;
+
+	new_vruntime = se_y_lca->vruntime + penalty;
+
+	/* Validity check */
+	if (new_vruntime <= se_y_lca->vruntime)
+		return;
+
+	se_y_lca->vruntime = new_vruntime;
+	se_y_lca->deadline = se_y_lca->vruntime + calc_delta_fair(se_y_lca->slice, se_y_lca);
+	se_y_lca->vlag = avg_vruntime(cfs_rq_common) - se_y_lca->vruntime;
+	update_zero_vruntime(cfs_rq_common);
+}
+
+/*
  * sched_yield() is very simple
  */
 static void yield_task_fair(struct rq *rq)
@@ -9080,6 +9366,52 @@ static void yield_task_fair(struct rq *rq)
 	}
 }
 
+/*
+ * yield_to_deboost - deboost the yielding task to favor the target on the same rq
+ * @rq: runqueue containing both tasks; rq->lock must be held
+ * @p_target: task to favor in scheduling
+ *
+ * Cooperates with yield_to_task_fair(): buddy provides immediate preference;
+ * this routine applies a bounded vruntime penalty at the cgroup LCA so the
+ * target keeps advantage beyond the buddy effect. EEVDF fields are updated
+ * to keep scheduler state consistent.
+ *
+ * Only operates on tasks resident on the same rq; throttled hierarchies are
+ * rejected early. Penalty is bounded by granularity and queue-size caps.
+ *
+ * Intended primarily for virtualization workloads where a yielding vCPU
+ * should defer to a target vCPU within the same runqueue.
+ * Does not change runnable order directly; complements buddy selection with
+ * a bounded fairness adjustment.
+ */
+static void yield_to_deboost(struct rq *rq, struct task_struct *p_target)
+{
+	struct task_struct *p_yielding;
+	struct sched_entity *se_y, *se_t, *se_y_lca, *se_t_lca;
+	struct cfs_rq *cfs_rq_common;
+	u64 penalty;
+
+	/* Step 1: validate tasks and inputs */
+	if (!yield_deboost_validate_tasks(rq, p_target, &p_yielding, &se_y, &se_t))
+		return;
+
+	/* Step 2: find LCA in cgroup hierarchy */
+	if (!yield_deboost_find_lca(se_y, se_t, &se_y_lca, &se_t_lca, &cfs_rq_common))
+		return;
+
+	/* Step 3: update clock and current accounting */
+	update_rq_clock(rq);
+	if (se_y_lca != cfs_rq_common->curr)
+		update_curr(cfs_rq_common);
+
+	/* Step 4: calculate penalty (caps + debounce) */
+	penalty = yield_deboost_calculate_penalty(rq, se_y_lca, se_t_lca, se_t,
+						  cfs_rq_common->nr_queued);
+
+	/* Step 5: apply penalty and update EEVDF fields */
+	yield_deboost_apply_penalty(rq, se_y_lca, cfs_rq_common, penalty);
+}
+
 static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
 {
 	struct sched_entity *se = &p->se;
@@ -9091,6 +9423,10 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
 	/* Tell the scheduler that we'd really like se to run next. */
 	set_next_buddy(se);
 
+	/* Apply deboost under rq lock. */
+	yield_to_deboost(rq, p);
+
+	/* Complete the standard yield path. */
 	yield_task_fair(rq);
 
 	return true;
