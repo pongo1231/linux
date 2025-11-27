@@ -4,6 +4,7 @@
  */
 
 #include <linux/percpu_counter.h>
+#include <linux/lazy_percpu_counter.h>
 #include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/cpu.h>
@@ -185,11 +186,26 @@ s64 __percpu_counter_sum(struct percpu_counter *fbc)
 }
 EXPORT_SYMBOL(__percpu_counter_sum);
 
+static int cpu_hotplug_add_watchlist(struct percpu_counter *fbc, int nr_counters)
+{
+#ifdef CONFIG_HOTPLUG_CPU
+	unsigned long flags;
+	int i;
+
+	spin_lock_irqsave(&percpu_counters_lock, flags);
+	for (i = 0; i < nr_counters; i++) {
+		INIT_LIST_HEAD(&fbc[i].list);
+		list_add(&fbc[i].list, &percpu_counters);
+	}
+	spin_unlock_irqrestore(&percpu_counters_lock, flags);
+#endif
+	return 0;
+}
+
 int __percpu_counter_init_many(struct percpu_counter *fbc, s64 amount,
 			       gfp_t gfp, u32 nr_counters,
 			       struct lock_class_key *key)
 {
-	unsigned long flags __maybe_unused;
 	size_t counter_size;
 	s32 __percpu *counters;
 	u32 i;
@@ -205,21 +221,12 @@ int __percpu_counter_init_many(struct percpu_counter *fbc, s64 amount,
 	for (i = 0; i < nr_counters; i++) {
 		raw_spin_lock_init(&fbc[i].lock);
 		lockdep_set_class(&fbc[i].lock, key);
-#ifdef CONFIG_HOTPLUG_CPU
-		INIT_LIST_HEAD(&fbc[i].list);
-#endif
 		fbc[i].count = amount;
 		fbc[i].counters = (void __percpu *)counters + i * counter_size;
 
 		debug_percpu_counter_activate(&fbc[i]);
 	}
-
-#ifdef CONFIG_HOTPLUG_CPU
-	spin_lock_irqsave(&percpu_counters_lock, flags);
-	for (i = 0; i < nr_counters; i++)
-		list_add(&fbc[i].list, &percpu_counters);
-	spin_unlock_irqrestore(&percpu_counters_lock, flags);
-#endif
+	cpu_hotplug_add_watchlist(fbc, nr_counters);
 	return 0;
 }
 EXPORT_SYMBOL(__percpu_counter_init_many);
@@ -389,6 +396,45 @@ out:
 	raw_spin_unlock(&fbc->lock);
 	local_irq_restore(flags);
 	return good;
+}
+
+int __lazy_percpu_counter_upgrade_many(struct lazy_percpu_counter *counters,
+				       int nr_counters, gfp_t gfp)
+{
+	s32 __percpu *pcpu_mem;
+	size_t counter_size;
+
+	counter_size = ALIGN(sizeof(*pcpu_mem), __alignof__(*pcpu_mem));
+	pcpu_mem = __alloc_percpu_gfp(nr_counters * counter_size,
+				      __alignof__(*pcpu_mem), gfp);
+	if (!pcpu_mem)
+		return -ENOMEM;
+
+	for (int i = 0; i < nr_counters; i++) {
+		struct lazy_percpu_counter *lpc = &(counters[i]);
+		s32 __percpu *n_counter;
+		s64 remote = 0;
+
+		WARN_ON(lazy_percpu_counter_initialized(lpc));
+
+		/*
+		 * After the xchg, lazy_percpu_counter behaves as a
+		 * regular percpu counter.
+		 */
+		n_counter = (void __percpu *)pcpu_mem + i * counter_size;
+		remote = (s64) atomic_long_xchg(&lpc->c.remote, (s64)(uintptr_t) n_counter);
+
+		BUG_ON(!(remote & LAZY_INIT_BIAS));
+
+		percpu_counter_add_local(&lpc->c, remove_bias(remote));
+	}
+
+	for (int i = 0; i < nr_counters; i++)
+		debug_percpu_counter_activate(&counters[i].c);
+
+	cpu_hotplug_add_watchlist((struct percpu_counter *) counters, nr_counters);
+
+	return 0;
 }
 
 static int __init percpu_counter_startup(void)
