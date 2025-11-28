@@ -1038,6 +1038,11 @@ void start_kernel(void)
 	boot_cpu_hotplug_init();
 
 	print_kernel_cmdline(saved_command_line);
+
+#ifdef CONFIG_HQSPINLOCKS
+	hq_configure_spin_lock_slowpath();
+#endif
+
 	/* parameters may set static keys */
 	parse_early_param();
 	after_dashes = parse_args("Booting kernel",
