@@ -506,6 +506,7 @@
 #define X86_FEATURE_SGX_EUPDATESVN	(21*32+17) /* Support for ENCLS[EUPDATESVN] instruction */
 
 #define X86_FEATURE_SDCIAE		(21*32+18) /* L3 Smart Data Cache Injection Allocation Enforcement */
+#define X86_FEATURE_CLEAR_BHB_EXIT_TO_USER (21*32+19) /* Clear branch history on exit-to-userspace, see VMSCAPE bug */
 
 /*
  * BUG word(s)

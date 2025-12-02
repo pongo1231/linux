@@ -388,6 +388,9 @@ extern void write_ibpb(void);
 
 #ifdef CONFIG_X86_64
 extern void clear_bhb_loop(void);
+extern void clear_bhb_long_loop_no_barrier(void);
+#else
+static inline void clear_bhb_long_loop_no_barrier(void) {}
 #endif
 
 extern void (*x86_return_thunk)(void);
@@ -531,7 +534,7 @@ void alternative_msr_write(unsigned int msr, u64 val, unsigned int feature)
 		: "memory");
 }
 
-DECLARE_PER_CPU(bool, x86_ibpb_exit_to_user);
+DECLARE_PER_CPU(bool, x86_pred_flush_pending);
 
 static inline void indirect_branch_prediction_barrier(void)
 {
