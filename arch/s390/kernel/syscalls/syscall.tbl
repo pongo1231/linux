@@ -339,6 +339,7 @@
 385	common	pkey_alloc			sys_pkey_alloc
 386	common	pkey_free			sys_pkey_free
 # room for arch specific syscalls
+<<<<<<< HEAD
 392	common	semtimedop			sys_semtimedop
 393	common	semget				sys_semget
 394	common	semctl				sys_semctl
@@ -397,3 +398,4 @@
 468	common	file_getattr			sys_file_getattr
 469	common	file_setattr			sys_file_setattr
 470	common	listns				sys_listns
+471 common	rseq_slice_yield	sys_rseq_slice_yield
