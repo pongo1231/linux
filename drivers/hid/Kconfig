@@ -1436,6 +1436,10 @@ config HID_KUNIT_TEST
 
 	  If in doubt, say "N".
 
+config HID_MSI_CLAW
+	tristate "MSI Claw series gamepad support (work-in-progress)"
+	depends on USB_HID
+
 endmenu
 
 source "drivers/hid/bpf/Kconfig"
@@ -1459,5 +1463,9 @@ source "drivers/hid/usbhid/Kconfig"
 source "drivers/hid/spi-hid/Kconfig"
 
 source "drivers/hid/dockchannel-hid/Kconfig"
+
+source "drivers/hid/zotac-zone-hid/Kconfig"
+
+source "drivers/hid/lenovo-legos-hid/Kconfig"
 
 endif # HID_SUPPORT
