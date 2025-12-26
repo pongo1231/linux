@@ -80,19 +80,19 @@ static inline void exfat_cache_update_lru(struct inode *inode,
 		list_move(&cache->cache_list, &ei->cache_lru);
 }
 
-static unsigned int exfat_cache_lookup(struct inode *inode,
+static bool exfat_cache_lookup(struct inode *inode,
 		unsigned int fclus, struct exfat_cache_id *cid,
 		unsigned int *cached_fclus, unsigned int *cached_dclus)
 {
 	struct exfat_inode_info *ei = EXFAT_I(inode);
 	static struct exfat_cache nohit = { .fcluster = 0, };
 	struct exfat_cache *hit = &nohit, *p;
-	unsigned int offset = EXFAT_EOF_CLUSTER;
+	unsigned int offset;
 
 	spin_lock(&ei->cache_lru_lock);
 	list_for_each_entry(p, &ei->cache_lru, cache_list) {
 		/* Find the cache of "fclus" or nearest cache. */
-		if (p->fcluster <= fclus && hit->fcluster < p->fcluster) {
+		if (p->fcluster <= fclus && hit->fcluster <= p->fcluster) {
 			hit = p;
 			if (hit->fcluster + hit->nr_contig < fclus) {
 				offset = hit->nr_contig;
@@ -114,7 +114,7 @@ static unsigned int exfat_cache_lookup(struct inode *inode,
 	}
 	spin_unlock(&ei->cache_lru_lock);
 
-	return offset;
+	return hit != &nohit;
 }
 
 static struct exfat_cache *exfat_cache_merge(struct inode *inode,
@@ -234,15 +234,17 @@ static inline void cache_init(struct exfat_cache_id *cid,
 }
 
 int exfat_get_cluster(struct inode *inode, unsigned int cluster,
-		unsigned int *fclus, unsigned int *dclus,
-		unsigned int *last_dclus, int allow_eof)
+		unsigned int *dclus, unsigned int *count,
+		unsigned int *last_dclus)
 {
 	struct super_block *sb = inode->i_sb;
 	struct exfat_sb_info *sbi = EXFAT_SB(sb);
 	unsigned int limit = sbi->num_clusters;
 	struct exfat_inode_info *ei = EXFAT_I(inode);
+	struct buffer_head *bh = NULL;
 	struct exfat_cache_id cid;
-	unsigned int content;
+	unsigned int content, fclus;
+	unsigned int end = (*count <= 1) ? cluster : cluster + *count - 1;
 
 	if (ei->start_clu == EXFAT_FREE_CLUSTER) {
 		exfat_fs_error(sb,
@@ -251,64 +253,90 @@ int exfat_get_cluster(struct inode *inode, unsigned int cluster,
 		return -EIO;
 	}
 
-	*fclus = 0;
+	fclus = 0;
 	*dclus = ei->start_clu;
 	*last_dclus = *dclus;
 
 	/*
-	 * Don`t use exfat_cache if zero offset or non-cluster allocation
+	 * This case should not exist, as exfat_map_cluster function doesn't
+	 * call this routine when start_clu == EXFAT_EOF_CLUSTER.
+	 * This case is retained here for routine completeness.
 	 */
-	if (cluster == 0 || *dclus == EXFAT_EOF_CLUSTER)
+	if (*dclus == EXFAT_EOF_CLUSTER) {
+		*count = 0;
 		return 0;
-
-	cache_init(&cid, EXFAT_EOF_CLUSTER, EXFAT_EOF_CLUSTER);
-
-	if (exfat_cache_lookup(inode, cluster, &cid, fclus, dclus) ==
-			EXFAT_EOF_CLUSTER) {
-		/*
-		 * dummy, always not contiguous
-		 * This is reinitialized by cache_init(), later.
-		 */
-		WARN_ON(cid.id != EXFAT_CACHE_VALID ||
-			cid.fcluster != EXFAT_EOF_CLUSTER ||
-			cid.dcluster != EXFAT_EOF_CLUSTER ||
-			cid.nr_contig != 0);
 	}
 
-	if (*fclus == cluster)
+	/* If only the first cluster is needed, return now. */
+	if (fclus == cluster && *count == 1)
 		return 0;
 
-	while (*fclus < cluster) {
+	cache_init(&cid, fclus, *dclus);
+	exfat_cache_lookup(inode, cluster, &cid, &fclus, dclus);
+
+	/*
+	 * Return on cache hit to keep the code simple.
+	 */
+	if (fclus == cluster) {
+		*count = cid.fcluster + cid.nr_contig - fclus + 1;
+		return 0;
+	}
+
+	/*
+	 * Find the first cluster we need.
+	 */
+	while (fclus < cluster) {
 		/* prevent the infinite loop of cluster chain */
-		if (*fclus > limit) {
+		if (fclus > limit) {
 			exfat_fs_error(sb,
 				"detected the cluster chain loop (i_pos %u)",
-				(*fclus));
-			return -EIO;
+				fclus);
+			goto err;
 		}
 
-		if (exfat_ent_get(sb, *dclus, &content))
-			return -EIO;
+		if (exfat_ent_get(sb, *dclus, &content, &bh))
+			goto err;
 
 		*last_dclus = *dclus;
 		*dclus = content;
-		(*fclus)++;
+		fclus++;
 
-		if (content == EXFAT_EOF_CLUSTER) {
-			if (!allow_eof) {
-				exfat_fs_error(sb,
-				       "invalid cluster chain (i_pos %u, last_clus 0x%08x is EOF)",
-				       *fclus, (*last_dclus));
-				return -EIO;
-			}
-
+		if (content == EXFAT_EOF_CLUSTER)
 			break;
-		}
 
 		if (!cache_contiguous(&cid, *dclus))
-			cache_init(&cid, *fclus, *dclus);
+			cache_init(&cid, fclus, *dclus);
 	}
 
+	/*
+	 * Collect the remaining clusters of this contiguous extent.
+	 */
+	if (*dclus != EXFAT_EOF_CLUSTER) {
+		unsigned int clu = *dclus;
+
+		/*
+		 * Now the cid cache contains the first cluster requested,
+		 * Advance the fclus to the last cluster of contiguous
+		 * extent, then update the count and cid cache accordingly.
+		 */
+		while (fclus < end) {
+			if (exfat_ent_get(sb, clu, &content, &bh))
+				goto err;
+			if (++clu != content) {
+				/* TODO: read ahead if content valid */
+				break;
+			}
+			fclus++;
+		}
+		cid.nr_contig = fclus - cid.fcluster;
+		*count = fclus - cluster + 1;
+	} else {
+		*count = 0;
+	}
+	brelse(bh);
 	exfat_cache_add(inode, &cid);
 	return 0;
+err:
+	brelse(bh);
+	return -EIO;
 }
