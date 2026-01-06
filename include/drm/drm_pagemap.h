@@ -4,6 +4,7 @@
 
 #include <linux/dma-direction.h>
 #include <linux/hmm.h>
+#include <linux/memremap.h>
 #include <linux/types.h>
 
 #define NR_PAGES(order) (1U << (order))
@@ -160,6 +161,7 @@ struct drm_pagemap_ops {
  * &struct drm_pagemap. May be NULL if no cache is used.
  * @shrink_link: Link into the shrinker's list of drm_pagemaps. Only
  * used if also using a pagemap cache.
+ * @folio_split_lock: Lock to protect device folio splitting.
  */
 struct drm_pagemap {
 	const struct drm_pagemap_ops *ops;
@@ -169,6 +171,8 @@ struct drm_pagemap {
 	struct drm_pagemap_dev_hold *dev_hold;
 	struct drm_pagemap_cache *cache;
 	struct list_head shrink_link;
+	/* Protect device folio splitting */
+	struct mutex folio_split_lock;
 };
 
 struct drm_pagemap_devmem;
@@ -373,4 +377,18 @@ int drm_pagemap_populate_mm(struct drm_pagemap *dpagemap,
 void drm_pagemap_destroy(struct drm_pagemap *dpagemap, bool is_atomic_or_reclaim);
 
 int drm_pagemap_reinit(struct drm_pagemap *dpagemap);
+
+/**
+ * drm_pagemap_page_zone_device_data() - Page to zone_device_data
+ * @page: Pointer to the page
+ *
+ * Return: Page's zone_device_data
+ */
+static inline struct drm_pagemap_zdd *drm_pagemap_page_zone_device_data(struct page *page)
+{
+	struct folio *folio = page_folio(page);
+
+	return folio_zone_device_data(folio);
+}
+
 #endif
