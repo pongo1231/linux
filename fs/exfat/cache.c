@@ -80,41 +80,66 @@ static inline void exfat_cache_update_lru(struct inode *inode,
 		list_move(&cache->cache_list, &ei->cache_lru);
 }
 
-static bool exfat_cache_lookup(struct inode *inode,
-		unsigned int fclus, struct exfat_cache_id *cid,
+/*
+ * Find the cache that covers or precedes 'fclus' and return the last
+ * cluster before the next cache range.
+ */
+static inline unsigned int
+exfat_cache_lookup(struct inode *inode, struct exfat_cache_id *cid,
+		unsigned int fclus, unsigned int end,
 		unsigned int *cached_fclus, unsigned int *cached_dclus)
 {
 	struct exfat_inode_info *ei = EXFAT_I(inode);
 	static struct exfat_cache nohit = { .fcluster = 0, };
 	struct exfat_cache *hit = &nohit, *p;
-	unsigned int offset;
+	unsigned int tail = 0;		/* End boundary of hit cache */
 
+	/*
+	 * Search range [fclus, end]. Stop early if:
+	 * 1. Cache covers entire range, or
+	 * 2. Next cache starts at current cache tail
+	 */
 	spin_lock(&ei->cache_lru_lock);
 	list_for_each_entry(p, &ei->cache_lru, cache_list) {
 		/* Find the cache of "fclus" or nearest cache. */
-		if (p->fcluster <= fclus && hit->fcluster <= p->fcluster) {
+		if (p->fcluster <= fclus) {
+			if (p->fcluster < hit->fcluster)
+				continue;
+
 			hit = p;
-			if (hit->fcluster + hit->nr_contig < fclus) {
-				offset = hit->nr_contig;
-			} else {
-				offset = fclus - hit->fcluster;
+			tail = hit->fcluster + hit->nr_contig;
+
+			/* Current cache covers [fclus, end] completely */
+			if (tail >= end)
 				break;
-			}
+		} else if (p->fcluster <= end) {
+			end = p->fcluster - 1;
+
+			/*
+			 * If we have a hit and next cache starts within/at
+			 * its tail, caches are contiguous, stop searching.
+			 */
+			if (tail && tail >= end)
+				break;
 		}
 	}
 	if (hit != &nohit) {
-		exfat_cache_update_lru(inode, hit);
+		unsigned int offset;
 
+		exfat_cache_update_lru(inode, hit);
 		cid->id = ei->cache_valid_id;
 		cid->nr_contig = hit->nr_contig;
 		cid->fcluster = hit->fcluster;
 		cid->dcluster = hit->dcluster;
+
+		offset = min(cid->nr_contig, fclus - cid->fcluster);
 		*cached_fclus = cid->fcluster + offset;
 		*cached_dclus = cid->dcluster + offset;
 	}
 	spin_unlock(&ei->cache_lru_lock);
 
-	return hit != &nohit;
+	/* Return next cache start or 'end' if no more caches */
+	return end;
 }
 
 static struct exfat_cache *exfat_cache_merge(struct inode *inode,
@@ -238,13 +263,11 @@ int exfat_get_cluster(struct inode *inode, unsigned int cluster,
 		unsigned int *last_dclus)
 {
 	struct super_block *sb = inode->i_sb;
-	struct exfat_sb_info *sbi = EXFAT_SB(sb);
-	unsigned int limit = sbi->num_clusters;
 	struct exfat_inode_info *ei = EXFAT_I(inode);
 	struct buffer_head *bh = NULL;
 	struct exfat_cache_id cid;
 	unsigned int content, fclus;
-	unsigned int end = (*count <= 1) ? cluster : cluster + *count - 1;
+	unsigned int end = cluster + *count - 1;
 
 	if (ei->start_clu == EXFAT_FREE_CLUSTER) {
 		exfat_fs_error(sb,
@@ -272,30 +295,22 @@ int exfat_get_cluster(struct inode *inode, unsigned int cluster,
 		return 0;
 
 	cache_init(&cid, fclus, *dclus);
-	exfat_cache_lookup(inode, cluster, &cid, &fclus, dclus);
-
 	/*
-	 * Return on cache hit to keep the code simple.
+	 * Update the 'end' to exclude the next cache range, as clusters in
+	 * different cache are typically not contiguous.
 	 */
-	if (fclus == cluster) {
-		*count = cid.fcluster + cid.nr_contig - fclus + 1;
+	end = exfat_cache_lookup(inode, &cid, cluster, end, &fclus, dclus);
+
+	/* Return if the cache covers the entire range. */
+	if (cid.fcluster + cid.nr_contig >= end) {
+		*count = end - cluster + 1;
 		return 0;
 	}
 
-	/*
-	 * Find the first cluster we need.
-	 */
+	/* Find the first cluster we need. */
 	while (fclus < cluster) {
-		/* prevent the infinite loop of cluster chain */
-		if (fclus > limit) {
-			exfat_fs_error(sb,
-				"detected the cluster chain loop (i_pos %u)",
-				fclus);
-			goto err;
-		}
-
 		if (exfat_ent_get(sb, *dclus, &content, &bh))
-			goto err;
+			return -EIO;
 
 		*last_dclus = *dclus;
 		*dclus = content;
@@ -309,27 +324,30 @@ int exfat_get_cluster(struct inode *inode, unsigned int cluster,
 	}
 
 	/*
-	 * Collect the remaining clusters of this contiguous extent.
+	 * Now the cid cache contains the first cluster requested, collect
+	 * the remaining clusters of this contiguous extent.
 	 */
 	if (*dclus != EXFAT_EOF_CLUSTER) {
 		unsigned int clu = *dclus;
 
-		/*
-		 * Now the cid cache contains the first cluster requested,
-		 * Advance the fclus to the last cluster of contiguous
-		 * extent, then update the count and cid cache accordingly.
-		 */
 		while (fclus < end) {
 			if (exfat_ent_get(sb, clu, &content, &bh))
-				goto err;
-			if (++clu != content) {
-				/* TODO: read ahead if content valid */
+				return -EIO;
+			if (++clu != content)
 				break;
-			}
 			fclus++;
 		}
 		cid.nr_contig = fclus - cid.fcluster;
 		*count = fclus - cluster + 1;
+
+		/*
+		 * Cache this discontiguous cluster, we'll definitely need
+		 * it later
+		 */
+		if (fclus < end && content != EXFAT_EOF_CLUSTER) {
+			exfat_cache_add(inode, &cid);
+			cache_init(&cid, fclus + 1, content);
+		}
 	} else {
 		*count = 0;
 	}

@@ -154,35 +154,16 @@ static int exfat_map_cluster(struct inode *inode, unsigned int clu_offset,
 		last_clu += num_clusters - 1;
 		if (clu_offset < num_clusters) {
 			*clu += clu_offset;
-			*count = num_clusters - clu_offset;
+			*count = min(num_clusters - clu_offset, *count);
 		} else {
 			*clu = EXFAT_EOF_CLUSTER;
 			*count = 0;
 		}
-	} else if (ei->type == TYPE_FILE) {
-		*count = hint_count;
+	} else {
 		int err = exfat_get_cluster(inode, clu_offset,
 				clu, count, &last_clu);
 		if (err)
 			return -EIO;
-	} else {
-		unsigned int fclus = 0;
-		/* hint information */
-		if (clu_offset > 0 && ei->hint_bmap.off != EXFAT_EOF_CLUSTER &&
-		    ei->hint_bmap.off > 0 && clu_offset >= ei->hint_bmap.off) {
-			/* hint_bmap.clu should be valid */
-			WARN_ON(ei->hint_bmap.clu < 2);
-			fclus = ei->hint_bmap.off;
-			*clu = ei->hint_bmap.clu;
-		}
-
-		while (fclus < clu_offset && *clu != EXFAT_EOF_CLUSTER) {
-			last_clu = *clu;
-			if (exfat_get_next_cluster(sb, clu))
-				return -EIO;
-			fclus++;
-		}
-		*count = (*clu == EXFAT_EOF_CLUSTER) ? 0 : 1;
 	}
 
 	if (*clu == EXFAT_EOF_CLUSTER) {
@@ -306,7 +287,7 @@ static int exfat_get_block(struct inode *inode, sector_t iblock,
 	sec_offset = iblock & (sbi->sect_per_clus - 1);
 
 	phys = exfat_cluster_to_sector(sbi, cluster) + sec_offset;
-	mapped_blocks = count * sbi->sect_per_clus - sec_offset;
+	mapped_blocks = ((unsigned long)count << sbi->sect_per_clus_bits) - sec_offset;
 	max_blocks = min(mapped_blocks, max_blocks);
 
 	map_bh(bh_result, sb, phys);
