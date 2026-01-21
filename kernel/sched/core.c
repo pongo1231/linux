@@ -4952,7 +4952,7 @@ struct balance_callback *splice_balance_callbacks(struct rq *rq)
 	return __splice_balance_callbacks(rq, true);
 }
 
-static __always_inline void __balance_callbacks(struct rq *rq, struct rq_flags *rf)
+__always_inline void __balance_callbacks(struct rq *rq, struct rq_flags *rf)
 {
 	if (rf)
 		rq_unpin_lock(rq, rf);
