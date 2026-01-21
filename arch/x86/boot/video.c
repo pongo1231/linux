@@ -79,12 +79,11 @@ static void store_mode_params(void)
 		video_segment = 0xb800;
 	}
 
-	set_fs(0);
-	font_size = rdfs16(0x485); /* Font size, BIOS area */
+	font_size = rdgs16(0x485); /* Font size, BIOS area */
 	boot_params.screen_info.orig_video_points = font_size;
 
-	x = rdfs16(0x44a);
-	y = (adapter == ADAPTER_CGA) ? 25 : rdfs8(0x484)+1;
+	x = rdgs16(0x44a);
+	y = (adapter == ADAPTER_CGA) ? 25 : rdgs8(0x484)+1;
 
 	if (force_x)
 		x = force_x;

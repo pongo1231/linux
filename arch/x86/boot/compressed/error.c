@@ -24,7 +24,6 @@ void error(char *m)
 }
 
 /* EFI libstub  provides vsnprintf() */
-#ifdef CONFIG_EFI_STUB
 void panic(const char *fmt, ...)
 {
 	static char buf[1024];
@@ -40,4 +39,3 @@ void panic(const char *fmt, ...)
 
 	error(buf);
 }
-#endif

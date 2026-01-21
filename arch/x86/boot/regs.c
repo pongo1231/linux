@@ -22,6 +22,7 @@ void initregs(struct biosregs *reg)
 	reg->eflags |= X86_EFLAGS_CF;
 	reg->ds = ds();
 	reg->es = ds();
+	/* The input values of %cs and %ss are ignored by intcall() */
 	reg->fs = fs();
-	reg->gs = gs();
+	/* %gs == 0 */
 }

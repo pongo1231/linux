@@ -907,6 +907,7 @@ config INTEL_TDX_GUEST
 	bool "Intel TDX (Trust Domain Extensions) - Guest Support"
 	depends on X86_64 && CPU_SUP_INTEL
 	depends on X86_X2APIC
+	depends on EFI_STUB
 	depends on PARAVIRT
 	select ARCH_HAS_CC_PLATFORM
 	select X86_MEM_ENCRYPT
@@ -1494,6 +1495,7 @@ config X86_MEM_ENCRYPT
 config AMD_MEM_ENCRYPT
 	bool "AMD Secure Memory Encryption (SME) support"
 	depends on X86_64 && CPU_SUP_AMD
+	depends on EFI_STUB
 	select DMA_COHERENT_POOL
 	select ARCH_USE_MEMREMAP_PROT
 	select INSTRUCTION_DECODER
@@ -1955,10 +1957,18 @@ config EFI
 	  platforms.
 
 config EFI_STUB
-       def_bool y
+	bool "EFI stub support"
+	depends on EFI
+	select RELOCATABLE
+	help
+	  This kernel feature allows a bzImage to be loaded directly
+	  by EFI firmware without the use of a bootloader.
+
+	  See Documentation/admin-guide/efi-stub.rst for more information.
 
 config EFI_HANDOVER_PROTOCOL
 	bool "EFI handover protocol (DEPRECATED)"
+	depends on EFI_STUB
 	default y
 	help
 	  Select this in order to include support for the deprecated EFI
@@ -1975,7 +1985,7 @@ config EFI_HANDOVER_PROTOCOL
 
 config EFI_MIXED
 	bool "EFI mixed-mode support"
-	depends on X86_64
+	depends on EFI_STUB && X86_64
 	help
 	  Enabling this feature allows a 64-bit kernel to be booted
 	  on a 32-bit firmware, provided that your CPU supports 64-bit
@@ -2046,16 +2056,61 @@ config PHYSICAL_START
 	help
 	  This gives the physical address where the kernel is loaded.
 
-	  If the kernel is loaded at a physical address below this address
-	  by the boot loader it will relocate itself there.
+	  If the kernel is not relocatable (CONFIG_RELOCATABLE=n) then bzImage
+	  will decompress itself to above physical address and run from there.
+	  Otherwise, bzImage will run from the address where it has been loaded
+	  by the boot loader. The only exception is if it is loaded below the
+	  above physical address, in which case it will relocate itself there.
 
-	  The addresses in the vmlinux and System.map files are based
-	  at this address.
+	  In normal kdump cases one does not have to set/change this option
+	  as now bzImage can be compiled as a completely relocatable image
+	  (CONFIG_RELOCATABLE=y) and be used to load and run from a different
+	  address. This option is mainly useful for the folks who don't want
+	  to use a bzImage for capturing the crash dump and want to use a
+	  vmlinux instead. vmlinux is not relocatable hence a kernel needs
+	  to be specifically compiled to run from a specific memory area
+	  (normally a reserved region) and this option comes handy.
+
+	  So if you are using bzImage for capturing the crash dump,
+	  leave the value here unchanged to 0x1000000 and set
+	  CONFIG_RELOCATABLE=y.  Otherwise if you plan to use vmlinux
+	  for capturing the crash dump change this value to start of
+	  the reserved region.  In other words, it can be set based on
+	  the "X" value as specified in the "crashkernel=YM@XM"
+	  command line boot parameter passed to the panic-ed
+	  kernel. Please take a look at Documentation/admin-guide/kdump/kdump.rst
+	  for more details about crash dumps.
+
+	  Usage of bzImage for capturing the crash dump is recommended as
+	  one does not have to build two kernels. Same kernel can be used
+	  as production kernel and capture kernel. Above option should have
+	  gone away after relocatable bzImage support is introduced. But it
+	  is present because there are users out there who continue to use
+	  vmlinux for dump capture. This option should go away down the
+	  line.
 
 	  Don't change this unless you know what you are doing.
 
+config RELOCATABLE
+	bool "Build a relocatable kernel"
+	default y
+	help
+	  This builds a kernel image that retains relocation information
+	  so it can be loaded someplace besides the default 1MB.
+	  The relocations tend to make the kernel binary about 10% larger,
+	  but are discarded at runtime.
+
+	  One use is for the kexec on panic case where the recovery kernel
+	  must live at a different physical address than the primary
+	  kernel.
+
+	  Note: If CONFIG_RELOCATABLE=y, then the kernel runs from the address
+	  it has been loaded at and the compile time physical address
+	  (CONFIG_PHYSICAL_START) is used as the minimum location.
+
 config RANDOMIZE_BASE
 	bool "Randomize the address of the kernel image (KASLR)"
+	depends on RELOCATABLE
 	default y
 	help
 	  In support of Kernel Address Space Layout Randomization (KASLR),
@@ -2091,7 +2146,7 @@ config RANDOMIZE_BASE
 # Relocation on x86 needs some additional build support
 config X86_NEED_RELOCS
 	def_bool y
-	depends on RANDOMIZE_BASE || X86_32
+	depends on RANDOMIZE_BASE || (X86_32 && RELOCATABLE)
 	select ARCH_VMLINUX_NEEDS_RELOCS
 
 config PHYSICAL_ALIGN
@@ -2104,9 +2159,17 @@ config PHYSICAL_ALIGN
 	  where kernel is loaded and run from. Kernel is compiled for an
 	  address which meets above alignment restriction.
 
-	  If bootloader loads the kernel at a non-aligned address the
-	  kernel will move itself upwards to the nearest address
-	  aligned to above value and run from there.
+	  If bootloader loads the kernel at a non-aligned address and
+	  CONFIG_RELOCATABLE is set, kernel will move itself to nearest
+	  address aligned to above value and run from there.
+
+	  If bootloader loads the kernel at a non-aligned address and
+	  CONFIG_RELOCATABLE is not set, kernel will ignore the run time
+	  load address and decompress itself to the address it has been
+	  compiled for and run from there. The address for which kernel is
+	  compiled already meets above alignment restrictions. Hence the
+	  end result is that kernel runs from a physical address meeting
+	  above alignment restrictions.
 
 	  On 32-bit this value must be a multiple of 0x2000. On 64-bit
 	  this value must be a multiple of 0x200000.

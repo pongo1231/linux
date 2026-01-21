@@ -73,7 +73,6 @@ static int bios_probe(void)
 	if (adapter != ADAPTER_EGA && adapter != ADAPTER_VGA)
 		return 0;
 
-	set_fs(0);
 	crtc = vga_crtc();
 
 	video_bios.modes = GET_HEAP(struct mode_info, 0);
@@ -105,8 +104,8 @@ static int bios_probe(void)
 		mi = GET_HEAP(struct mode_info, 1);
 		mi->mode = VIDEO_FIRST_BIOS+mode;
 		mi->depth = 0;	/* text */
-		mi->x = rdfs16(0x44a);
-		mi->y = rdfs8(0x484)+1;
+		mi->x = rdgs16(0x44a);
+		mi->y = rdgs8(0x484)+1;
 		nmodes++;
 	}
 

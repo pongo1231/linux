@@ -25,7 +25,6 @@
 #include "voffset.h"
 #include "zoffset.h"
 
-BOOTSEG		= 0x07C0		/* original address of boot-sector */
 SYSSEG		= 0x1000		/* historical load address >> 4 */
 
 #ifndef SVGA_MODE
@@ -39,11 +38,18 @@ SYSSEG		= 0x1000		/* historical load address >> 4 */
 	.set	salign, 0x1000
 	.set	falign, 0x200
 
-	.code16
-	.section ".bstext", "ax"
-#ifdef CONFIG_EFI_STUB
+# EFI PECOFF header ##########################################################
+
+	.section ".header", "a"
 	# "MZ", MS-DOS header
 	.word	IMAGE_DOS_SIGNATURE
+
+	.org	0x20
+	# Used for the command line protocol in boot protocols 2.00-2.01
+	.globl	old_cmdline
+old_cmdline:
+	.word	0, 0
+
 	.org	0x38
 	#
 	# Offset to the PE header.
@@ -221,15 +227,16 @@ pecompat_fstart:
 		IMAGE_SCN_MEM_WRITE		# Characteristics
 
 	.set	section_count, (. - section_table) / 40
-#endif /* CONFIG_EFI_STUB */
 
-	# Kernel attributes; used by setup.  This is part 1 of the
-	# header, from the old boot sector.
+# bzImage header #############################################################
 
-	.section ".header", "a"
+	# hdr should be at address 0x1f1; -2 for the sentinel
+	.org	0x1f1-2, 0xff			# Fill with 0xff
+
 	.globl	sentinel
 sentinel:	.byte 0xff, 0xff        /* Used to detect broken loaders */
 
+	# The bzImage struct setup_header
 	.globl	hdr
 hdr:
 		.byte setup_sects - 1
@@ -240,15 +247,15 @@ vid_mode:	.word SVGA_MODE
 root_dev:	.word 0			/* Default to major/minor 0/0 */
 boot_flag:	.word 0xAA55
 
-	# offset 512, entry point
+	# offset 512, entry point AND struct setup_header length marker
 
 	.globl	_start
 _start:
 		# Explicitly enter this as bytes, or the assembler
-		# tries to generate a 3-byte jump here, which causes
+		# might try to generate a 3-byte jump here, which causes
 		# everything else to push off to the wrong offset.
 		.byte	0xeb		# short (2-byte) jump
-		.byte	start_of_setup-1f
+		.byte	end_of_bzheader-1f
 1:
 
 	# Part 2 of the header, from the old setup.S
@@ -271,6 +278,7 @@ type_of_loader:	.byte	0		# 0 means ancient bootloader, newer
 					# assigned ids
 
 # flags, unused bits must be zero (RFU) bit within loadflags
+		.globl	loadflags
 loadflags:
 		.byte	LOADED_HIGH	# The kernel is to be loaded high
 
@@ -295,6 +303,7 @@ ramdisk_size:	.long	0		# its size in bytes
 bootsect_kludge:
 		.long	0		# obsolete
 
+		.globl	heap_end_ptr
 heap_end_ptr:	.word	_end+STACK_SIZE-512
 					# (Header version 0x0201 or later)
 					# space from here (exclusive) down to
@@ -332,24 +341,16 @@ initrd_addr_max: .long 0x7fffffff
 kernel_alignment:  .long CONFIG_PHYSICAL_ALIGN	#physical addr alignment
 						#required for protected mode
 						#kernel
-#ifdef CONFIG_RELOCATABLE
-relocatable_kernel:    .byte 1
-#else
-relocatable_kernel:    .byte 0
-#endif
+relocatable_kernel:	.byte 1			# Always relocatable
 min_alignment:		.byte MIN_KERNEL_ALIGN_LG2	# minimum alignment
 
 xloadflags:
 #ifdef CONFIG_X86_64
 # define XLF0 XLF_KERNEL_64			/* 64-bit kernel */
-#else
-# define XLF0 0
-#endif
-
-#if defined(CONFIG_RELOCATABLE) && defined(CONFIG_X86_64)
    /* kernel/boot_param/ramdisk could be loaded above 4g */
 # define XLF1 XLF_CAN_BE_LOADED_ABOVE_4G
 #else
+# define XLF0 0
 # define XLF1 0
 #endif
 
@@ -541,79 +542,7 @@ init_size:		.long INIT_SIZE		# kernel initialization size
 handover_offset:	__handover_offset
 kernel_info_offset:	.long ZO_kernel_info
 
-# End of setup header #####################################################
+	.globl end_of_bzheader
+end_of_bzheader:
 
-	.section ".entrytext", "ax"
-start_of_setup:
-# Force %es = %ds
-	movw	%ds, %ax
-	movw	%ax, %es
-	cld
-
-# Apparently some ancient versions of LILO invoked the kernel with %ss != %ds,
-# which happened to work by accident for the old code.  Recalculate the stack
-# pointer if %ss is invalid.  Otherwise leave it alone, LOADLIN sets up the
-# stack behind its own code, so we can't blindly put it directly past the heap.
-
-	movw	%ss, %dx
-	cmpw	%ax, %dx	# %ds == %ss?
-	movw	%sp, %dx
-	je	2f		# -> assume %sp is reasonably set
-
-	# Invalid %ss, make up a new stack
-	movw	$_end, %dx
-	testb	$CAN_USE_HEAP, loadflags
-	jz	1f
-	movw	heap_end_ptr, %dx
-1:	addw	$STACK_SIZE, %dx
-	jnc	2f
-	xorw	%dx, %dx	# Prevent wraparound
-
-2:	# Now %dx should point to the end of our stack space
-	andw	$~3, %dx	# dword align (might as well...)
-	jnz	3f
-	movw	$0xfffc, %dx	# Make sure we're not zero
-3:	movw	%ax, %ss
-	movzwl	%dx, %esp	# Clear upper half of %esp
-	sti			# Now we should have a working stack
-
-# We will have entered with %cs = %ds+0x20, normalize %cs so
-# it is on par with the other segments.
-	pushw	%ds
-	pushw	$6f
-	lretw
-6:
-
-# Check signature at end of setup
-	cmpl	$0x5a5aaa55, setup_sig
-	jne	setup_bad
-
-# Zero the bss
-	movw	$__bss_start, %di
-	movw	$_end+3, %cx
-	xorl	%eax, %eax
-	subw	%di, %cx
-	shrw	$2, %cx
-	rep stosl
-
-# Jump to C code (should not return)
-	calll	main
-
-# Setup corrupt somehow...
-setup_bad:
-	movl	$setup_corrupt, %eax
-	calll	puts
-	# Fall through...
-
-	.globl	die
-	.type	die, @function
-die:
-	hlt
-	jmp	die
-
-	.size	die, .-die
-
-	.section ".initdata", "a"
-setup_corrupt:
-	.byte	7
-	.string	"No setup signature found...\n"
+# End of bzImage header ######################################################

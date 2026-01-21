@@ -106,10 +106,7 @@ void go_to_protected_mode(void)
 	realmode_switch_hook();
 
 	/* Enable the A20 gate */
-	if (enable_a20()) {
-		puts("A20 gate not responding, unable to boot...\n");
-		die();
-	}
+	enable_a20();
 
 	/* Reset coprocessor (IGNNE#) */
 	reset_coprocessor();

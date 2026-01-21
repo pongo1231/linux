@@ -119,9 +119,8 @@ static void vga_recalc_vertical(void)
 	u16 crtc;
 	u8 pt, ov;
 
-	set_fs(0);
-	font_size = rdfs8(0x485); /* BIOS: font size (pixels) */
-	rows = force_y ? force_y : rdfs8(0x484)+1; /* Text rows */
+	font_size = rdgs8(0x485); /* BIOS: font size (pixels) */
+	rows = force_y ? force_y : rdgs8(0x484)+1; /* Text rows */
 
 	rows *= font_size;	/* Visible scan lines */
 	rows--;			/* ... minus one */

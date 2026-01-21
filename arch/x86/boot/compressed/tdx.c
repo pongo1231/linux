@@ -2,7 +2,7 @@
 
 #include "../cpuflags.h"
 #include "../string.h"
-#include "../io.h"
+#include "io.h"
 #include "error.h"
 
 #include <vdso/limits.h>

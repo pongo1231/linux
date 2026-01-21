@@ -53,24 +53,22 @@ static int empty_8042(void)
 
 static int a20_test(int loops)
 {
-	int ok = 0;
 	int saved, ctr;
 
-	set_fs(0x0000);
-	set_gs(0xffff);
+	set_fs(0xffff);
 
-	saved = ctr = rdfs32(A20_TEST_ADDR);
+	saved = ctr = rdgs32(A20_TEST_ADDR);
 
-	while (loops--) {
-		wrfs32(++ctr, A20_TEST_ADDR);
+	do {
+		wrgs32(++ctr, A20_TEST_ADDR);
 		io_delay();	/* Serialize and make delay constant */
-		ok = rdgs32(A20_TEST_ADDR+0x10) ^ ctr;
-		if (ok)
+		barrier();	/* Compiler won't know about fs/gs overlap */
+		if (rdfs32(A20_TEST_ADDR+0x10) != ctr)
 			break;
-	}
+	} while (--loops);
 
-	wrfs32(saved, A20_TEST_ADDR);
-	return ok;
+	wrgs32(saved, A20_TEST_ADDR);
+	return loops;
 }
 
 /* Quick test to see if A20 is already enabled */
@@ -125,7 +123,7 @@ static void enable_a20_fast(void)
 
 #define A20_ENABLE_LOOPS 255	/* Number of times to try */
 
-int enable_a20(void)
+void enable_a20(void)
 {
        int loops = A20_ENABLE_LOOPS;
        int kbc_err;
@@ -134,30 +132,30 @@ int enable_a20(void)
 	       /* First, check to see if A20 is already enabled
 		  (legacy free, etc.) */
 	       if (a20_test_short())
-		       return 0;
+		       return;
 
 	       /* Next, try the BIOS (INT 0x15, AX=0x2401) */
 	       enable_a20_bios();
 	       if (a20_test_short())
-		       return 0;
+		       return;
 
 	       /* Try enabling A20 through the keyboard controller */
 	       kbc_err = empty_8042();
 
 	       if (a20_test_short())
-		       return 0; /* BIOS worked, but with delayed reaction */
+		       return; /* BIOS worked, but with delayed reaction */
 
 	       if (!kbc_err) {
 		       enable_a20_kbc();
 		       if (a20_test_long())
-			       return 0;
+			      return;
 	       }
 
 	       /* Finally, try enabling the "fast A20 gate" */
 	       enable_a20_fast();
 	       if (a20_test_long())
-		       return 0;
+		       return;
        }
 
-       return -1;
+       die("A20 gate not responding, unable to boot...\n");
 }

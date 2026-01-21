@@ -70,14 +70,16 @@ SYM_CODE_START(wakeup_start)
 	movl	$rm_stack_end, %esp
 	movw	%ax, %ds
 	movw	%ax, %es
-	movw	%ax, %fs
-	movw	%ax, %gs
 
-	lidtl	.Lwakeup_idt
+	xorl	%eax, %eax
+	movw	%ax, %fs
+	movw	%ax, %gs	/* The real mode code requires %gs == 0 */
 
 	/* Clear the EFLAGS */
-	pushl $0
+	pushl	%eax
 	popfl
+
+	lidtl	.Lwakeup_idt
 
 	/* Check header signature... */
 	movl	signature, %eax

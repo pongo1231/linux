@@ -15,44 +15,43 @@
 #include "boot.h"
 #include "string.h"
 
+/* Buffer for building the full "zero page" struct boot_params */
 struct boot_params boot_params __attribute__((aligned(16)));
-
-struct port_io_ops pio_ops;
 
 char *HEAP = _end;
 char *heap_end = _end;		/* Default end of heap = no heap */
 
 /*
- * Copy the header into the boot parameter block.  Since this
- * screws up the old-style command line protocol, adjust by
- * filling in the new-style command line pointer instead.
+ * Copy the header into the boot parameter block.  Since this screws
+ * up the old-style command line protocol (protocol 2.00-2.01), adjust
+ * by filling in the new-style command line pointer instead.
  */
+struct old_cmdline {
+	u16 cl_magic;
+	u16 cl_offset;
+};
+extern const struct old_cmdline old_cmdline;
+
 static void copy_boot_params(void)
 {
-	struct old_cmdline {
-		u16 cl_magic;
-		u16 cl_offset;
-	};
-	const struct old_cmdline * const oldcmd = absolute_pointer(OLD_CL_ADDRESS);
-
 	BUILD_BUG_ON(sizeof(boot_params) != 4096);
 	memcpy(&boot_params.hdr, &hdr, sizeof(hdr));
 
-	if (!boot_params.hdr.cmd_line_ptr && oldcmd->cl_magic == OLD_CL_MAGIC) {
+	if (!boot_params.hdr.cmd_line_ptr &&
+	    old_cmdline.cl_magic == OLD_CL_MAGIC) {
 		/* Old-style command line protocol */
-		u16 cmdline_seg;
+		u32 cmdline_base = 0x90000;
 
 		/*
 		 * Figure out if the command line falls in the region
 		 * of memory that an old kernel would have copied up
 		 * to 0x90000...
 		 */
-		if (oldcmd->cl_offset < boot_params.hdr.setup_move_size)
-			cmdline_seg = ds();
-		else
-			cmdline_seg = 0x9000;
+		if (old_cmdline.cl_offset < boot_params.hdr.setup_move_size)
+			cmdline_base = ds() << 4;
 
-		boot_params.hdr.cmd_line_ptr = (cmdline_seg << 4) + oldcmd->cl_offset;
+		boot_params.hdr.cmd_line_ptr =
+			cmdline_base + old_cmdline.cl_offset;
 	}
 }
 
@@ -132,8 +131,6 @@ static void init_heap(void)
 
 void main(void)
 {
-	init_default_io_ops();
-
 	/* First, copy the boot header into the "zeropage" */
 	copy_boot_params();
 
@@ -146,10 +143,8 @@ void main(void)
 	init_heap();
 
 	/* Make sure we have all the proper CPU support */
-	if (validate_cpu()) {
-		puts("Unable to boot - please use a kernel appropriate for your CPU.\n");
-		die();
-	}
+	if (validate_cpu())
+		die("Unable to boot - please use a kernel appropriate for your CPU.\n");
 
 	/* Tell the BIOS what CPU mode we intend to run in */
 	set_bios_mode();
