@@ -4887,23 +4887,6 @@ static __always_inline void finish_task(struct task_struct *prev)
 	smp_store_release(&prev->on_cpu, 0);
 }
 
-static __always_inline void do_balance_callbacks(struct rq *rq, struct balance_callback *head)
-{
-	void (*func)(struct rq *rq);
-	struct balance_callback *next;
-
-	lockdep_assert_rq_held(rq);
-
-	while (head) {
-		func = (void (*)(struct rq *))head->func;
-		next = head->next;
-		head->next = NULL;
-		head = next;
-
-		func(rq);
-	}
-}
-
 static void balance_push(struct rq *rq);
 
 /*
@@ -4922,43 +4905,9 @@ struct balance_callback balance_push_callback = {
 	.func = balance_push,
 };
 
-static __always_inline struct balance_callback *
-__splice_balance_callbacks(struct rq *rq, bool split)
-{
-	struct balance_callback *head = rq->balance_callback;
-
-	if (likely(!head))
-		return NULL;
-
-	lockdep_assert_rq_held(rq);
-	/*
-	 * Must not take balance_push_callback off the list when
-	 * splice_balance_callbacks() and balance_callbacks() are not
-	 * in the same rq->lock section.
-	 *
-	 * In that case it would be possible for __schedule() to interleave
-	 * and observe the list empty.
-	 */
-	if (split && head == &balance_push_callback)
-		head = NULL;
-	else
-		rq->balance_callback = NULL;
-
-	return head;
-}
-
 struct balance_callback *splice_balance_callbacks(struct rq *rq)
 {
 	return __splice_balance_callbacks(rq, true);
-}
-
-__always_inline void __balance_callbacks(struct rq *rq, struct rq_flags *rf)
-{
-	if (rf)
-		rq_unpin_lock(rq, rf);
-	do_balance_callbacks(rq, __splice_balance_callbacks(rq, false));
-	if (rf)
-		rq_repin_lock(rq, rf);
 }
 
 void balance_callbacks(struct rq *rq, struct balance_callback *head)
